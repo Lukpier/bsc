@@ -799,6 +799,72 @@ func (api *API) TraceCall(ctx context.Context, args ethapi.CallArgs, blockNrOrHa
 	return api.traceTx(ctx, msg, new(txTraceContext), vmctx, statedb, traceConfig)
 }
 
+// CallMany lets you trace a given eth_call. It collects the structured logs
+// created during the execution of EVM if the given transaction was added
+// on top of the provided block and returns them as a JSON object.
+// You can provide -2 as a block number to trace on top of the pending block.
+func (api *API) TraceCallMany(ctx context.Context, args []ethapi.CallArgs, blockNrOrHash rpc.BlockNumberOrHash, config *TraceCallConfig) ([]interface{}, error) {
+	// Try to retrieve the specified block
+	var (
+		err   error
+		block *types.Block
+	)
+	if hash, ok := blockNrOrHash.Hash(); ok {
+		block, err = api.blockByHash(ctx, hash)
+	} else if number, ok := blockNrOrHash.Number(); ok {
+		block, err = api.blockByNumber(ctx, number)
+	} else {
+		return nil, errors.New("invalid arguments; neither block nor hash specified")
+	}
+	if err != nil {
+		return nil, err
+	}
+	// try to recompute the state
+	reexec := defaultTraceReexec
+	if config != nil && config.Reexec != nil {
+		reexec = *config.Reexec
+	}
+	statedb, err := api.backend.StateAtBlock(ctx, block, reexec, nil, true)
+	if err != nil {
+		return nil, err
+	}
+	// Apply the customized state rules if required.
+	if config != nil {
+		if err := config.StateOverrides.Apply(statedb); err != nil {
+			return nil, err
+		}
+	}
+
+	var results = make([]interface{}, len(args))
+	for idx, arg := range args {
+		// Execute the trace
+		msg := arg.ToMessage(api.backend.RPCGasCap())
+		if err != nil {
+			results[idx] = &txTraceResult{Error: err.Error()}
+			continue
+		}
+		vmctx := core.NewEVMBlockContext(block.Header(), api.chainContext(ctx), nil)
+
+		var traceConfig *TraceConfig
+		if config != nil {
+			traceConfig = &TraceConfig{
+				LogConfig: config.LogConfig,
+				Tracer:    config.Tracer,
+				Timeout:   config.Timeout,
+				Reexec:    config.Reexec,
+			}
+		}
+		res, err := api.traceTx(ctx, msg, new(txTraceContext), vmctx, statedb, traceConfig)
+		if err != nil {
+			results[idx] = &txTraceResult{Error: err.Error()}
+			continue
+		}
+		results[idx] = res
+	}
+
+	return results, nil
+}
+
 // traceTx configures a new tracer according to the provided configuration, and
 // executes the given message in the provided environment. The return value will
 // be tracer dependent.
