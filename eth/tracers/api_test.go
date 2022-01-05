@@ -307,6 +307,99 @@ func TestTraceCall(t *testing.T) {
 	}
 }
 
+func TestTraceCallMany(t *testing.T) {
+	t.Parallel()
+
+	// Initialize test accounts
+	accounts := newAccounts(3)
+	genesis := &core.Genesis{Alloc: core.GenesisAlloc{
+		accounts[0].addr: {Balance: big.NewInt(params.Ether)},
+		accounts[1].addr: {Balance: big.NewInt(params.Ether)},
+		accounts[2].addr: {Balance: big.NewInt(params.Ether)},
+	}}
+	genBlocks := 10
+	signer := types.HomesteadSigner{}
+	api := NewAPI(newTestBackend(t, genBlocks, genesis, func(i int, b *core.BlockGen) {
+		// Transfer from account[0] to account[1]
+		//    value: 1000 wei
+		//    fee:   0 wei
+		tx, _ := types.SignTx(types.NewTransaction(uint64(i), accounts[1].addr, big.NewInt(1000), params.TxGas, big.NewInt(0), nil), signer, accounts[0].key)
+		b.AddTx(tx)
+	}))
+	var testSuite = []struct {
+		blockNumber rpc.BlockNumber
+		calls       []ethapi.CallArgs
+		config      *TraceCallConfig
+		expectErr   error
+		expect      []ethapi.ExecutionResult
+	}{
+		// Standard JSON trace upon the genesis, plain transfer.
+		{
+			blockNumber: rpc.BlockNumber(0),
+			calls: []ethapi.CallArgs{
+				{
+					From:  &accounts[0].addr,
+					To:    &accounts[1].addr,
+					Value: (*hexutil.Big)(big.NewInt(1000)),
+				},
+				{
+					From:  &accounts[0].addr,
+					To:    &accounts[1].addr,
+					Value: (*hexutil.Big)(big.NewInt(1000)),
+				},
+				{
+					From:  &accounts[0].addr,
+					To:    &accounts[1].addr,
+					Value: (*hexutil.Big)(big.NewInt(1000)),
+				},
+			},
+			config:    nil,
+			expectErr: nil,
+			expect: []ethapi.ExecutionResult{
+				{
+					Gas:         params.TxGas,
+					Failed:      false,
+					ReturnValue: "",
+					StructLogs:  []ethapi.StructLogRes{},
+				},
+				{
+					Gas:         params.TxGas,
+					Failed:      false,
+					ReturnValue: "",
+					StructLogs:  []ethapi.StructLogRes{},
+				},
+				{
+					Gas:         params.TxGas,
+					Failed:      false,
+					ReturnValue: "",
+					StructLogs:  []ethapi.StructLogRes{},
+				},
+			},
+		},
+	}
+
+	for _, testspec := range testSuite {
+		result, err := api.TraceCallMany(context.Background(), testspec.calls, rpc.BlockNumberOrHash{BlockNumber: &testspec.blockNumber}, testspec.config)
+		if testspec.expectErr != nil {
+			if err == nil {
+				t.Errorf("Expect error %v, get nothing", testspec.expectErr)
+				continue
+			}
+		} else {
+			if err != nil {
+				t.Errorf("Expect no error, get %v", err)
+				continue
+			}
+			for index, res := range result {
+				if !reflect.DeepEqual(*(res.(*ethapi.ExecutionResult)), testspec.expect[index]) {
+					t.Errorf("Result mismatch, want %v, get %v", testspec.expect[index], *(res.(*ethapi.ExecutionResult)))
+				}
+			}
+
+		}
+	}
+}
+
 func TestOverridenTraceCall(t *testing.T) {
 	t.Parallel()
 
