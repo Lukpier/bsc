@@ -23,11 +23,13 @@ require (
 	github.com/docker/docker v1.4.2-0.20180625184442-8e610b2b55bf
 	github.com/dop251/goja v0.0.0-20200721192441-a695b0cdd498
 	github.com/edsrzf/mmap-go v1.0.0
+	github.com/elazarl/go-bindata-assetfs v1.0.1 // indirect
 	github.com/etcd-io/bbolt v1.3.3 // indirect
 	github.com/fatih/color v1.7.0
 	github.com/fjl/memsize v0.0.0-20190710130421-bcb5799ab5e5
 	github.com/fortytw2/leaktest v1.3.0 // indirect
 	github.com/gballet/go-libpcsclite v0.0.0-20190607065134-2772fd86a8ff
+	github.com/go-bindata/go-bindata v3.1.2+incompatible // indirect
 	github.com/go-ole/go-ole v1.2.1 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.2+incompatible // indirect
 	github.com/go-stack/stack v1.8.0

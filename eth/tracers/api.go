@@ -158,19 +158,21 @@ func (api *API) blockByNumberAndHash(ctx context.Context, number rpc.BlockNumber
 // TraceConfig holds extra parameters to trace functions.
 type TraceConfig struct {
 	*vm.LogConfig
-	Tracer  *string
-	Timeout *string
-	Reexec  *uint64
+	Tracer            *string
+	Timeout           *string
+	Reexec            *uint64
+	NestedTraceOutput bool // Returns the trace output JSON nested under the trace name key. This allows full Parity compatibility to be achieved.
 }
 
 // TraceCallConfig is the config for traceCall API. It holds one more
 // field to override the state for tracing.
 type TraceCallConfig struct {
 	*vm.LogConfig
-	Tracer         *string
-	Timeout        *string
-	Reexec         *uint64
-	StateOverrides *ethapi.StateOverride
+	Tracer            *string
+	Timeout           *string
+	Reexec            *uint64
+	StateOverrides    *ethapi.StateOverride
+	NestedTraceOutput bool // Returns the trace output JSON nested under the trace name key. This allows full Parity compatibility to be achieved.
 }
 
 // StdTraceConfig holds extra parameters to standard-json trace functions.
@@ -848,16 +850,21 @@ func (api *API) TraceCallMany(ctx context.Context, args []ethapi.CallArgs, block
 		var traceConfig *TraceConfig
 		if config != nil {
 			traceConfig = &TraceConfig{
-				LogConfig: config.LogConfig,
-				Tracer:    config.Tracer,
-				Timeout:   config.Timeout,
-				Reexec:    config.Reexec,
+				LogConfig:         config.LogConfig,
+				Tracer:            config.Tracer,
+				Timeout:           config.Timeout,
+				Reexec:            config.Reexec,
+				NestedTraceOutput: config.NestedTraceOutput,
 			}
 		}
 		res, err := api.traceTx(ctx, msg, new(txTraceContext), vmctx, statedb, traceConfig)
 		if err != nil {
 			results[idx] = &txTraceResult{Error: err.Error()}
 			continue
+		}
+		res, err = decorateResponse(res, traceConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decorate response for transaction at index %d with error %v", idx, err)
 		}
 		results[idx] = res
 	}

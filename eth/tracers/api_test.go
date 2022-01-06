@@ -312,6 +312,7 @@ func TestTraceCallMany(t *testing.T) {
 
 	// Initialize test accounts
 	accounts := newAccounts(3)
+	//tracer := "callTracerParity"
 	genesis := &core.Genesis{Alloc: core.GenesisAlloc{
 		accounts[0].addr: {Balance: big.NewInt(params.Ether)},
 		accounts[1].addr: {Balance: big.NewInt(params.Ether)},
@@ -380,6 +381,7 @@ func TestTraceCallMany(t *testing.T) {
 
 	for _, testspec := range testSuite {
 		result, err := api.TraceCallMany(context.Background(), testspec.calls, rpc.BlockNumberOrHash{BlockNumber: &testspec.blockNumber}, testspec.config)
+		fmt.Printf("%v", result[0])
 		if testspec.expectErr != nil {
 			if err == nil {
 				t.Errorf("Expect error %v, get nothing", testspec.expectErr)
