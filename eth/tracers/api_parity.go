@@ -26,6 +26,12 @@ type TraceAPI struct {
 	debugAPI *API
 }
 
+// NewTraceAPI creates a new API definition for the full node-related
+// private debug methods of the Ethereum service.
+func NewTraceAPI(debugAPI *API) *TraceAPI {
+	return &TraceAPI{debugAPI: debugAPI}
+}
+
 // decorateResponse applies formatting to trace results if needed.
 func decorateResponse(res interface{}, config *TraceConfig) (interface{}, error) {
 	if config != nil && config.NestedTraceOutput && config.Tracer != nil {

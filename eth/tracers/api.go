@@ -956,12 +956,13 @@ func (api *API) traceTx(ctx context.Context, message core.Message, txctx *txTrac
 
 // APIs return the collection of RPC services the tracer package offers.
 func APIs(backend Backend) []rpc.API {
+	debugAPI := NewAPI(backend)
 	// Append all the local APIs and return
 	return []rpc.API{
 		{
 			Namespace: "debug",
 			Version:   "1.0",
-			Service:   NewAPI(backend),
+			Service:   debugAPI,
 			Public:    false,
 		},
 	}
