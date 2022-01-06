@@ -965,5 +965,11 @@ func APIs(backend Backend) []rpc.API {
 			Service:   debugAPI,
 			Public:    false,
 		},
+		{
+			Namespace: "trace",
+			Version:   "1.0",
+			Service:   NewTraceAPI(debugAPI),
+			Public:    false,
+		},
 	}
 }
