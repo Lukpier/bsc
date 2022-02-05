@@ -281,7 +281,7 @@ func (api *API) traceChain(ctx context.Context, start, end *types.Block, config 
 						hash:  tx.Hash(),
 						block: task.block.Hash(),
 					}
-					res, err := api.traceTx(localctx, msg, txctx, blockCtx, task.statedb, config)
+					res, err := api.traceTx(localctx, msg, txctx, blockCtx, task.statedb, nil, config)
 					if err != nil {
 						task.results[i] = &txTraceResult{Error: err.Error()}
 						log.Warn("Tracing failed", "hash", tx.Hash(), "block", task.block.NumberU64(), "err", err)
@@ -533,7 +533,7 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, config *Trac
 					hash:  txs[task.index].Hash(),
 					block: blockHash,
 				}
-				res, err := api.traceTx(ctx, msg, txctx, blockCtx, task.statedb, config)
+				res, err := api.traceTx(ctx, msg, txctx, blockCtx, task.statedb, nil, config)
 				if err != nil {
 					results[task.index] = &txTraceResult{Error: err.Error()}
 					continue
@@ -747,7 +747,7 @@ func (api *API) TraceTransaction(ctx context.Context, hash common.Hash, config *
 		hash:  hash,
 		block: blockHash,
 	}
-	return api.traceTx(ctx, msg, txctx, vmctx, statedb, config)
+	return api.traceTx(ctx, msg, txctx, vmctx, statedb, nil, config)
 }
 
 // TraceCall lets you trace a given eth_call. It collects the structured logs
@@ -798,7 +798,46 @@ func (api *API) TraceCall(ctx context.Context, args ethapi.CallArgs, blockNrOrHa
 			Reexec:    config.Reexec,
 		}
 	}
-	return api.traceTx(ctx, msg, new(txTraceContext), vmctx, statedb, traceConfig)
+
+	originalCanTransfer := vmctx.CanTransfer
+	originalTransfer := vmctx.Transfer
+
+	// Store the truth on wether from acount has enough balance for context usage
+	gasCost := new(big.Int).Mul(new(big.Int).SetUint64(msg.Gas()), msg.GasPrice())
+	totalCost := new(big.Int).Add(gasCost, msg.Value())
+	hasFromSufficientBalanceForValueAndGasCost := vmctx.CanTransfer(statedb, msg.From(), totalCost)
+	hasFromSufficientBalanceForGasCost := vmctx.CanTransfer(statedb, msg.From(), gasCost)
+
+	// This is needed for trace_call (debug mode),
+	// as the Transaction is being run on top of the block transactions,
+	// which might lead into ErrInsufficientFundsForTransfer error
+	vmctx.CanTransfer = func(db vm.StateDB, sender common.Address, amount *big.Int) bool {
+		if msg.From() == sender {
+			return true
+		}
+		res := originalCanTransfer(db, sender, amount)
+		return res
+	}
+
+	// If the actual transaction would fail, then their is no reason to actually transfer any balance at all
+	vmctx.Transfer = func(db vm.StateDB, sender, recipient common.Address, amount *big.Int) {
+		toAmount := new(big.Int).Set(amount)
+
+		senderBalance := db.GetBalance(sender)
+		if senderBalance.Cmp(toAmount) < 0 {
+			toAmount.Set(big.NewInt(0))
+		}
+
+		originalTransfer(db, sender, recipient, toAmount)
+	}
+
+	// Add extra context needed for state_diff
+	taskExtraContext := map[string]interface{}{
+		"hasFromSufficientBalanceForValueAndGasCost": hasFromSufficientBalanceForValueAndGasCost,
+		"hasFromSufficientBalanceForGasCost":         hasFromSufficientBalanceForGasCost,
+	}
+
+	return api.traceTx(ctx, msg, new(txTraceContext), vmctx, statedb, taskExtraContext, traceConfig)
 }
 
 // CallMany lets you trace a given eth_call. It collects the structured logs
@@ -857,7 +896,47 @@ func (api *API) TraceCallMany(ctx context.Context, args []ethapi.CallArgs, block
 				NestedTraceOutput: config.NestedTraceOutput,
 			}
 		}
-		res, err := api.traceTx(ctx, msg, new(txTraceContext), vmctx, statedb, traceConfig)
+
+		originalCanTransfer := vmctx.CanTransfer
+		originalTransfer := vmctx.Transfer
+
+		// Store the truth on wether from acount has enough balance for context usage
+		gasCost := new(big.Int).Mul(new(big.Int).SetUint64(msg.Gas()), msg.GasPrice())
+		totalCost := new(big.Int).Add(gasCost, msg.Value())
+		hasFromSufficientBalanceForValueAndGasCost := vmctx.CanTransfer(statedb, msg.From(), totalCost)
+		hasFromSufficientBalanceForGasCost := vmctx.CanTransfer(statedb, msg.From(), gasCost)
+
+		// This is needed for trace_call (debug mode),
+		// as the Transaction is being run on top of the block transactions,
+		// which might lead into ErrInsufficientFundsForTransfer error
+		vmctx.CanTransfer = func(db vm.StateDB, sender common.Address, amount *big.Int) bool {
+			if msg.From() == sender {
+				return true
+			}
+			res := originalCanTransfer(db, sender, amount)
+			return res
+		}
+
+		// If the actual transaction would fail, then their is no reason to actually transfer any balance at all
+		vmctx.Transfer = func(db vm.StateDB, sender, recipient common.Address, amount *big.Int) {
+			toAmount := new(big.Int).Set(amount)
+
+			senderBalance := db.GetBalance(sender)
+			if senderBalance.Cmp(toAmount) < 0 {
+				toAmount.Set(big.NewInt(0))
+			}
+
+			originalTransfer(db, sender, recipient, toAmount)
+		}
+
+		// Add extra context needed for state_diff
+		taskExtraContext := map[string]interface{}{
+			"hasFromSufficientBalanceForValueAndGasCost": hasFromSufficientBalanceForValueAndGasCost,
+			"hasFromSufficientBalanceForGasCost":         hasFromSufficientBalanceForGasCost,
+		}
+
+		res, err := api.traceTx(ctx, msg, new(txTraceContext), vmctx, statedb, taskExtraContext, traceConfig)
+		fmt.Printf("%s", res)
 		if err != nil {
 			results[idx] = &txTraceResult{Error: err.Error()}
 			continue
@@ -875,15 +954,18 @@ func (api *API) TraceCallMany(ctx context.Context, args []ethapi.CallArgs, block
 // traceTx configures a new tracer according to the provided configuration, and
 // executes the given message in the provided environment. The return value will
 // be tracer dependent.
-func (api *API) traceTx(ctx context.Context, message core.Message, txctx *txTraceContext, vmctx vm.BlockContext, statedb *state.StateDB, config *TraceConfig) (interface{}, error) {
+func (api *API) traceTx(ctx context.Context, message core.Message, txctx *txTraceContext, vmctx vm.BlockContext, statedb *state.StateDB, extraContext map[string]interface{}, config *TraceConfig) (interface{}, error) {
 	// Assemble the structured logger or the JavaScript tracer
+
 	var (
 		tracer    vm.Tracer
 		err       error
 		txContext = core.NewEVMTxContext(message)
 	)
 	switch {
-	case config != nil && config.Tracer != nil:
+	case config == nil:
+		tracer = vm.NewStructLogger(nil)
+	case config.Tracer != nil:
 		// Define a meaningful timeout of a single transaction trace
 		timeout := defaultTraceTimeout
 		if config.Timeout != nil {
@@ -891,40 +973,54 @@ func (api *API) traceTx(ctx context.Context, message core.Message, txctx *txTrac
 				return nil, err
 			}
 		}
-		// Constuct the JavaScript tracer to execute with
-		if tracer, err = New(*config.Tracer, txContext); err != nil {
+		if t, err := New(*config.Tracer, txctx); err != nil {
 			return nil, err
+		} else {
+			deadlineCtx, cancel := context.WithTimeout(ctx, timeout)
+			go func() {
+				<-deadlineCtx.Done()
+				if errors.Is(deadlineCtx.Err(), context.DeadlineExceeded) {
+					t.Stop(errors.New("execution timeout"))
+				}
+			}()
+			defer cancel()
+			tracer = t
 		}
-		// Handle timeouts and RPC cancellations
-		deadlineCtx, cancel := context.WithTimeout(ctx, timeout)
-		gopool.Submit(func() {
-			<-deadlineCtx.Done()
-			if deadlineCtx.Err() == context.DeadlineExceeded {
-				tracer.(*Tracer).Stop(errors.New("execution timeout"))
-			}
-		})
-		defer cancel()
-
-	case config == nil:
-		tracer = vm.NewStructLogger(nil)
-
 	default:
 		tracer = vm.NewStructLogger(config.LogConfig)
 	}
 	// Run the transaction with tracing enabled.
-	vmenv := vm.NewEVM(vmctx, txContext, statedb, api.backend.ChainConfig(), vm.Config{Debug: true, Tracer: tracer})
-
-	if posa, ok := api.backend.Engine().(consensus.PoSA); ok && message.From() == vmctx.Coinbase &&
-		posa.IsSystemContract(message.To()) && message.GasPrice().Cmp(big.NewInt(0)) == 0 {
-		balance := statedb.GetBalance(consensus.SystemAddress)
-		if balance.Cmp(common.Big0) > 0 {
-			statedb.SetBalance(consensus.SystemAddress, big.NewInt(0))
-			statedb.AddBalance(vmctx.Coinbase, balance)
-		}
-	}
+	vmenv := vm.NewEVM(vmctx, txContext, statedb, api.backend.ChainConfig(), vm.Config{Debug: true, Tracer: tracer, NoBaseFee: true})
 
 	// Call Prepare to clear out the statedb access list
-	statedb.Prepare(txctx.hash, txctx.block, txctx.index)
+	statedb.Prepare(txctx.hash, common.Hash{}, txctx.index)
+
+	switch tracer := tracer.(type) {
+	case *jsTracer:
+		if extraContext == nil {
+			extraContext = map[string]interface{}{}
+		}
+
+		if txctx.hash != (common.Hash{}) {
+			extraContext["transactionHash"] = txctx.hash.Hex()
+		}
+		if txctx.block != (common.Hash{}) {
+			extraContext["blockHash"] = txctx.block.Hex()
+		}
+		extraContext["transactionPosition"] = uint64(txctx.index)
+
+		// Add useful context for all tracers
+		extraContext["from"] = message.From()
+		if message.To() != nil {
+			extraContext["msgTo"] = *message.To()
+		}
+		extraContext["coinbase"] = vmctx.Coinbase
+
+		extraContext["gasLimit"] = message.Gas()
+		extraContext["gasPrice"] = message.GasPrice()
+
+		tracer.CapturePreEVM(vmenv, extraContext)
+	}
 
 	result, err := core.ApplyMessage(vmenv, message, new(core.GasPool).AddGas(message.Gas()))
 	if err != nil {
@@ -946,8 +1042,10 @@ func (api *API) traceTx(ctx context.Context, message core.Message, txctx *txTrac
 			StructLogs:  ethapi.FormatLogs(tracer.StructLogs()),
 		}, nil
 
-	case *Tracer:
-		return tracer.GetResult()
+	case *jsTracer:
+		res, err := tracer.GetResult()
+		fmt.Printf("%v", string(res))
+		return res, err
 
 	default:
 		panic(fmt.Sprintf("bad tracer type %T", tracer))

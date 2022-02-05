@@ -18,11 +18,27 @@
 package tracers
 
 import (
+	"encoding/json"
 	"strings"
 	"unicode"
 
+	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/eth/tracers/internal/tracers"
 )
+
+var (
+	nativeTracers map[string]func() Tracer = make(map[string]func() Tracer)
+	jsTracers                              = make(map[string]string)
+)
+
+// Tracer interface extends vm.EVMLogger and additionally
+// allows collecting the tracing result.
+type Tracer interface {
+	vm.Tracer
+	GetResult() (json.RawMessage, error)
+	// Stop terminates execution of the tracer at the first opportune moment.
+	Stop(err error)
+}
 
 // all contains all the built in JavaScript tracers by name.
 var all = make(map[string]string)
@@ -36,11 +52,30 @@ func camel(str string) string {
 	return strings.Join(pieces, "")
 }
 
+// New returns a new instance of a tracer,
+// 1. If 'code' is the name of a registered native tracer, then that tracer
+//   is instantiated and returned
+// 2. If 'code' is the name of a registered js-tracer, then that tracer is
+//   instantiated and returned
+// 3. Otherwise, the code is interpreted as the js code of a js-tracer, and
+//   is evaluated and returned.
+func New(code string, ctx *txTraceContext) (Tracer, error) {
+	// Resolve native tracer
+	if fn, ok := nativeTracers[code]; ok {
+		return fn(), nil
+	}
+	// Resolve js-tracers by name and assemble the tracer object
+	if tracer, ok := jsTracers[code]; ok {
+		code = tracer
+	}
+	return newJsTracer(code, ctx)
+}
+
 // init retrieves the JavaScript transaction tracers included in go-ethereum.
 func init() {
 	for _, file := range tracers.AssetNames() {
 		name := camel(strings.TrimSuffix(file, ".js"))
-		all[name] = string(tracers.MustAsset(file))
+		jsTracers[name] = string(tracers.MustAsset(file))
 	}
 }
 

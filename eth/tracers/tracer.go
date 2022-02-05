@@ -286,7 +286,7 @@ func (cw *contractWrapper) pushObject(vm *duktape.Context) {
 
 // Tracer provides an implementation of Tracer that evaluates a Javascript
 // function for each VM execution step.
-type Tracer struct {
+type jsTracer struct {
 	vm *duktape.Context // Javascript VM instance
 
 	tracerObject int // Stack index of the tracer JavaScript object
@@ -298,44 +298,125 @@ type Tracer struct {
 	contractWrapper *contractWrapper // Wrapper around the contract object
 	dbWrapper       *dbWrapper       // Wrapper around the VM environment
 
-	pcValue     *uint   // Swappable pc value wrapped by a log accessor
-	gasValue    *uint   // Swappable gas value wrapped by a log accessor
-	costValue   *uint   // Swappable cost value wrapped by a log accessor
-	depthValue  *uint   // Swappable depth value wrapped by a log accessor
-	errorValue  *string // Swappable error value wrapped by a log accessor
-	refundValue *uint   // Swappable refund value wrapped by a log accessor
+	pcValue           *uint   // Swappable pc value wrapped by a log accessor
+	gasValue          *uint   // Swappable gas value wrapped by a log accessor
+	availableGasValue *uint   // Swappable available gas value for this specific call wrapped by a log accessor
+	costValue         *uint   // Swappable cost value wrapped by a log accessor
+	depthValue        *uint   // Swappable depth value wrapped by a log accessor
+	returnData        *[]byte // Swappable return data wrapped by a log accessor
+	errorValue        *string // Swappable error value wrapped by a log accessor
+	opErrorValue      *string // Swappable error value for this specific call wrapped by a log accessor. NOTE: the error is for the previous call trace
+	refundValue       *uint   // Swappable refund value wrapped by a log accessor
+
+	frame       *frame       // Represents entry into call frame. Fields are swappable
+	frameResult *frameResult // Represents exit from a call frame. Fields are swappable
 
 	ctx map[string]interface{} // Transaction context gathered throughout execution
 	err error                  // Error, if one has occurred
 
 	interrupt uint32 // Atomic flag to signal execution interruption
 	reason    error  // Textual reason for the interruption
+
+	activePrecompiles []common.Address // Updated on CaptureStart based on given rules
+
+	traceSteps      bool // When true, will invoke step() on each opcode
+	traceCallFrames bool // When true, will invoke enter() and exit() js funcs
+
+	supportsStepPerfOptimisations bool  // Checks wether tracer supports `getCallstackLength` method in order to achieve optimal performance for call_tracer*
+	handleNextOpCode              bool  // Flag for step prechecker, instructing that next VM opcode has to be proccessed in `step` method
+	callTracerCallstackLength     *uint // Holds the current callstack length for call tracers, which can be compared with VM depth
 }
 
-// New instantiates a new tracer instance. code specifies a Javascript snippet,
+type frameResult struct {
+	gasUsed    *uint
+	output     []byte
+	errorValue *string
+}
+
+type frame struct {
+	typ   *string
+	from  *common.Address
+	to    *common.Address
+	input []byte
+	gas   *uint
+	value *big.Int
+}
+
+func newFrameResult() *frameResult {
+	return &frameResult{
+		gasUsed: new(uint),
+	}
+}
+
+func newFrame() *frame {
+	return &frame{
+		typ:  new(string),
+		from: new(common.Address),
+		to:   new(common.Address),
+		gas:  new(uint),
+	}
+}
+
+func (f *frame) pushObject(vm *duktape.Context) {
+	obj := vm.PushObject()
+
+	vm.PushGoFunction(func(ctx *duktape.Context) int { pushValue(ctx, *f.typ); return 1 })
+	vm.PutPropString(obj, "getType")
+
+	vm.PushGoFunction(func(ctx *duktape.Context) int { pushValue(ctx, *f.from); return 1 })
+	vm.PutPropString(obj, "getFrom")
+
+	vm.PushGoFunction(func(ctx *duktape.Context) int { pushValue(ctx, *f.to); return 1 })
+	vm.PutPropString(obj, "getTo")
+
+	vm.PushGoFunction(func(ctx *duktape.Context) int { pushValue(ctx, f.input); return 1 })
+	vm.PutPropString(obj, "getInput")
+
+	vm.PushGoFunction(func(ctx *duktape.Context) int { pushValue(ctx, *f.gas); return 1 })
+	vm.PutPropString(obj, "getGas")
+
+	vm.PushGoFunction(func(ctx *duktape.Context) int {
+		if f.value != nil {
+			pushValue(ctx, f.value)
+		} else {
+			ctx.PushUndefined()
+		}
+		return 1
+	})
+	vm.PutPropString(obj, "getValue")
+}
+
+// newJsTracer instantiates a new tracer instance. code specifies a Javascript snippet,
 // which must evaluate to an expression returning an object with 'step', 'fault'
 // and 'result' functions.
-func New(code string, txCtx vm.TxContext) (*Tracer, error) {
-	// Resolve any tracers by name and assemble the tracer object
-	if tracer, ok := tracer(code); ok {
-		code = tracer
+func newJsTracer(code string, ctx *txTraceContext) (*jsTracer, error) {
+	tracer := &jsTracer{
+		vm:                        duktape.New(),
+		ctx:                       make(map[string]interface{}),
+		opWrapper:                 new(opWrapper),
+		stackWrapper:              new(stackWrapper),
+		memoryWrapper:             new(memoryWrapper),
+		contractWrapper:           new(contractWrapper),
+		dbWrapper:                 new(dbWrapper),
+		pcValue:                   new(uint),
+		gasValue:                  new(uint),
+		availableGasValue:         new(uint),
+		costValue:                 new(uint),
+		depthValue:                new(uint),
+		returnData:                new([]byte),
+		refundValue:               new(uint),
+		callTracerCallstackLength: new(uint),
+		frame:                     newFrame(),
+		frameResult:               newFrameResult(),
 	}
-	tracer := &Tracer{
-		vm:              duktape.New(),
-		ctx:             make(map[string]interface{}),
-		opWrapper:       new(opWrapper),
-		stackWrapper:    new(stackWrapper),
-		memoryWrapper:   new(memoryWrapper),
-		contractWrapper: new(contractWrapper),
-		dbWrapper:       new(dbWrapper),
-		pcValue:         new(uint),
-		gasValue:        new(uint),
-		costValue:       new(uint),
-		depthValue:      new(uint),
-		refundValue:     new(uint),
-	}
-	tracer.ctx["gasPrice"] = txCtx.GasPrice
+	if ctx.block != (common.Hash{}) {
+		tracer.ctx["blockHash"] = ctx.block
 
+		if ctx.hash != (common.Hash{}) {
+			tracer.ctx["txIndex"] = ctx.index
+			tracer.ctx["txHash"] = ctx.hash
+		}
+	}
 	// Set up builtins for this environment
 	tracer.vm.PushGlobalGoFunction("toHex", func(ctx *duktape.Context) int {
 		ctx.PushString(hexutil.Encode(popSlice(ctx)))
@@ -400,8 +481,14 @@ func New(code string, txCtx vm.TxContext) (*Tracer, error) {
 		return 1
 	})
 	tracer.vm.PushGlobalGoFunction("isPrecompiled", func(ctx *duktape.Context) int {
-		_, ok := vm.PrecompiledContractsIstanbul[common.BytesToAddress(popSlice(ctx))]
-		ctx.PushBoolean(ok)
+		addr := common.BytesToAddress(popSlice(ctx))
+		for _, p := range tracer.activePrecompiles {
+			if p == addr {
+				ctx.PushBoolean(true)
+				return 1
+			}
+		}
+		ctx.PushBoolean(false)
 		return 1
 	})
 	tracer.vm.PushGlobalGoFunction("slice", func(ctx *duktape.Context) int {
@@ -428,9 +515,12 @@ func New(code string, txCtx vm.TxContext) (*Tracer, error) {
 	}
 	tracer.tracerObject = 0 // yeah, nice, eval can't return the index itself
 
-	if !tracer.vm.GetPropString(tracer.tracerObject, "step") {
-		return nil, fmt.Errorf("trace object must expose a function step()")
+	if tracer.vm.GetPropString(tracer.tracerObject, "getCallstackLength") {
+		tracer.supportsStepPerfOptimisations = true
 	}
+	tracer.vm.Pop()
+
+	hasStep := tracer.vm.GetPropString(tracer.tracerObject, "step")
 	tracer.vm.Pop()
 
 	if !tracer.vm.GetPropString(tracer.tracerObject, "fault") {
@@ -442,6 +532,16 @@ func New(code string, txCtx vm.TxContext) (*Tracer, error) {
 		return nil, fmt.Errorf("trace object must expose a function result()")
 	}
 	tracer.vm.Pop()
+
+	hasEnter := tracer.vm.GetPropString(tracer.tracerObject, "enter")
+	tracer.vm.Pop()
+	hasExit := tracer.vm.GetPropString(tracer.tracerObject, "exit")
+	tracer.vm.Pop()
+	if hasEnter != hasExit {
+		return nil, fmt.Errorf("trace object must expose either both or none of enter() and exit()")
+	}
+	tracer.traceCallFrames = hasEnter && hasExit
+	tracer.traceSteps = hasStep
 
 	// Tracer is valid, inject the big int library to access large numbers
 	tracer.vm.EvalString(bigIntegerJS)
@@ -470,14 +570,34 @@ func New(code string, txCtx vm.TxContext) (*Tracer, error) {
 	tracer.vm.PushGoFunction(func(ctx *duktape.Context) int { ctx.PushUint(*tracer.gasValue); return 1 })
 	tracer.vm.PutPropString(logObject, "getGas")
 
+	tracer.vm.PushGoFunction(func(ctx *duktape.Context) int { ctx.PushUint(*tracer.availableGasValue); return 1 })
+	tracer.vm.PutPropString(logObject, "getAvailableGas")
+
 	tracer.vm.PushGoFunction(func(ctx *duktape.Context) int { ctx.PushUint(*tracer.costValue); return 1 })
 	tracer.vm.PutPropString(logObject, "getCost")
 
 	tracer.vm.PushGoFunction(func(ctx *duktape.Context) int { ctx.PushUint(*tracer.depthValue); return 1 })
 	tracer.vm.PutPropString(logObject, "getDepth")
 
+	tracer.vm.PushGoFunction(func(ctx *duktape.Context) int {
+		ptr := ctx.PushFixedBuffer(len(*tracer.returnData))
+		copy(makeSlice(ptr, uint(len(*tracer.returnData))), *tracer.returnData)
+		return 1
+	})
+	tracer.vm.PutPropString(logObject, "getReturnData")
+
 	tracer.vm.PushGoFunction(func(ctx *duktape.Context) int { ctx.PushUint(*tracer.refundValue); return 1 })
 	tracer.vm.PutPropString(logObject, "getRefund")
+
+	tracer.vm.PushGoFunction(func(ctx *duktape.Context) int {
+		if tracer.opErrorValue != nil {
+			ctx.PushString(*tracer.opErrorValue)
+		} else {
+			ctx.PushUndefined()
+		}
+		return 1
+	})
+	tracer.vm.PutPropString(logObject, "getCallError")
 
 	tracer.vm.PushGoFunction(func(ctx *duktape.Context) int {
 		if tracer.errorValue != nil {
@@ -491,21 +611,47 @@ func New(code string, txCtx vm.TxContext) (*Tracer, error) {
 
 	tracer.vm.PutPropString(tracer.stateObject, "log")
 
+	tracer.frame.pushObject(tracer.vm)
+	tracer.vm.PutPropString(tracer.stateObject, "frame")
+
+	tracer.frameResult.pushObject(tracer.vm)
+	tracer.vm.PutPropString(tracer.stateObject, "frameResult")
+
 	tracer.dbWrapper.pushObject(tracer.vm)
 	tracer.vm.PutPropString(tracer.stateObject, "db")
 
 	return tracer, nil
 }
 
+func (r *frameResult) pushObject(vm *duktape.Context) {
+	obj := vm.PushObject()
+
+	vm.PushGoFunction(func(ctx *duktape.Context) int { pushValue(ctx, *r.gasUsed); return 1 })
+	vm.PutPropString(obj, "getGasUsed")
+
+	vm.PushGoFunction(func(ctx *duktape.Context) int { pushValue(ctx, r.output); return 1 })
+	vm.PutPropString(obj, "getOutput")
+
+	vm.PushGoFunction(func(ctx *duktape.Context) int {
+		if r.errorValue != nil {
+			pushValue(ctx, *r.errorValue)
+		} else {
+			ctx.PushUndefined()
+		}
+		return 1
+	})
+	vm.PutPropString(obj, "getError")
+}
+
 // Stop terminates execution of the tracer at the first opportune moment.
-func (jst *Tracer) Stop(err error) {
+func (jst *jsTracer) Stop(err error) {
 	jst.reason = err
 	atomic.StoreUint32(&jst.interrupt, 1)
 }
 
 // call executes a method on a JS object, catching any errors, formatting and
 // returning them as error objects.
-func (jst *Tracer) call(method string, args ...string) (json.RawMessage, error) {
+func (jst *jsTracer) call(noret bool, method string, args ...string) (json.RawMessage, error) {
 	// Execute the JavaScript call and return any error
 	jst.vm.PushString(method)
 	for _, arg := range args {
@@ -519,15 +665,92 @@ func (jst *Tracer) call(method string, args ...string) (json.RawMessage, error) 
 		return nil, errors.New(err)
 	}
 	// No error occurred, extract return value and return
-	return json.RawMessage(jst.vm.JsonEncode(-1)), nil
+	if noret {
+		return nil, nil
+	}
+	// Push a JSON marshaller onto the stack. We can't marshal from the out-
+	// side because duktape can crash on large nestings and we can't catch
+	// C++ exceptions ourselves from Go. TODO(karalabe): Yuck, why wrap?!
+	jst.vm.PushString("(JSON.stringify)")
+	jst.vm.Eval()
+
+	jst.vm.Swap(-1, -2)
+	if code = jst.vm.Pcall(1); code != 0 {
+		err := jst.vm.SafeToString(-1)
+		return nil, errors.New(err)
+	}
+	return json.RawMessage(jst.vm.SafeToString(-1)), nil
 }
 
 func wrapError(context string, err error) error {
 	return fmt.Errorf("%v    in server-side tracer function '%v'", err, context)
 }
 
+// addToObj pushes a field to a JS object.
+func (jst *jsTracer) addToObj(obj int, key string, val interface{}) {
+	pushValue(jst.vm, val)
+	jst.vm.PutPropString(obj, key)
+}
+
+func pushValue(ctx *duktape.Context, val interface{}) {
+	switch val := val.(type) {
+	case uint64:
+		ctx.PushUint(uint(val))
+	case string:
+		ctx.PushString(val)
+	case bool:
+		ctx.PushBoolean(val)
+	case []byte:
+		ptr := ctx.PushFixedBuffer(len(val))
+		copy(makeSlice(ptr, uint(len(val))), val)
+	case common.Address:
+		ptr := ctx.PushFixedBuffer(20)
+		copy(makeSlice(ptr, 20), val[:])
+	case *big.Int:
+		pushBigInt(val, ctx)
+	case int:
+		ctx.PushInt(val)
+	case uint:
+		ctx.PushUint(val)
+	case common.Hash:
+		ptr := ctx.PushFixedBuffer(32)
+		copy(makeSlice(ptr, 32), val[:])
+	default:
+		panic(fmt.Sprintf("unsupported type: %T", val))
+	}
+}
+
+// addCtxIntoState adds/updates the ctx vars in the duktape context
+func (jst *jsTracer) addCtxIntoState() {
+	// Transform the context into a JavaScript object and inject into the state
+	obj := jst.vm.PushObject()
+	for key, val := range jst.ctx {
+		jst.addToObj(obj, key, val)
+	}
+	jst.vm.PutPropString(jst.stateObject, "ctx")
+}
+
+// CapturePreEVM implements the Tracer interface to bootstrap the tracing context,
+// before EVM init. This is useful for reading initial balance, state, etc.
+func (jst *jsTracer) CapturePreEVM(env *vm.EVM, inputs map[string]interface{}) {
+	jst.dbWrapper.db = env.StateDB
+
+	for key, val := range inputs {
+		jst.ctx[key] = val
+	}
+
+	if jst.vm.GetPropString(jst.tracerObject, "init") {
+		jst.addCtxIntoState()
+		_, err := jst.call(true, "init", "ctx", "db")
+		if err != nil {
+			jst.err = wrapError("init", err)
+			return
+		}
+	}
+}
+
 // CaptureStart implements the Tracer interface to initialize the tracing operation.
-func (jst *Tracer) CaptureStart(env *vm.EVM, from common.Address, to common.Address, create bool, input []byte, gas uint64, value *big.Int) {
+func (jst *jsTracer) CaptureStart(env *vm.EVM, from common.Address, to common.Address, create bool, input []byte, gas uint64, value *big.Int) {
 	jst.ctx["type"] = "CALL"
 	if create {
 		jst.ctx["type"] = "CREATE"
@@ -552,7 +775,7 @@ func (jst *Tracer) CaptureStart(env *vm.EVM, from common.Address, to common.Addr
 }
 
 // CaptureState implements the Tracer interface to trace a single step of VM execution.
-func (jst *Tracer) CaptureState(env *vm.EVM, pc uint64, op vm.OpCode, gas, cost uint64, scope *vm.ScopeContext, rData []byte, depth int, err error) {
+func (jst *jsTracer) CaptureState(env *vm.EVM, pc uint64, op vm.OpCode, gas, cost uint64, scope *vm.ScopeContext, rData []byte, depth int, err error) {
 	if jst.err != nil {
 		return
 	}
@@ -578,13 +801,13 @@ func (jst *Tracer) CaptureState(env *vm.EVM, pc uint64, op vm.OpCode, gas, cost 
 		*jst.errorValue = err.Error()
 	}
 
-	if _, err := jst.call("step", "log", "db"); err != nil {
+	if _, err := jst.call(true, "step", "log", "db"); err != nil {
 		jst.err = wrapError("step", err)
 	}
 }
 
 // CaptureFault implements the Tracer interface to trace an execution fault
-func (jst *Tracer) CaptureFault(env *vm.EVM, pc uint64, op vm.OpCode, gas, cost uint64, scope *vm.ScopeContext, depth int, err error) {
+func (jst *jsTracer) CaptureFault(env *vm.EVM, pc uint64, op vm.OpCode, gas, cost uint64, scope *vm.ScopeContext, depth int, err error) {
 	if jst.err != nil {
 		return
 	}
@@ -592,13 +815,13 @@ func (jst *Tracer) CaptureFault(env *vm.EVM, pc uint64, op vm.OpCode, gas, cost 
 	jst.errorValue = new(string)
 	*jst.errorValue = err.Error()
 
-	if _, err := jst.call("fault", "log", "db"); err != nil {
+	if _, err := jst.call(true, "fault", "log", "db"); err != nil {
 		jst.err = wrapError("fault", err)
 	}
 }
 
 // CaptureEnd is called after the call finishes to finalize the tracing.
-func (jst *Tracer) CaptureEnd(output []byte, gasUsed uint64, t time.Duration, err error) {
+func (jst *jsTracer) CaptureEnd(output []byte, gasUsed uint64, t time.Duration, err error) {
 	jst.ctx["output"] = output
 	jst.ctx["time"] = t.String()
 	jst.ctx["gasUsed"] = gasUsed
@@ -609,38 +832,12 @@ func (jst *Tracer) CaptureEnd(output []byte, gasUsed uint64, t time.Duration, er
 }
 
 // GetResult calls the Javascript 'result' function and returns its value, or any accumulated error
-func (jst *Tracer) GetResult() (json.RawMessage, error) {
+func (jst *jsTracer) GetResult() (json.RawMessage, error) {
 	// Transform the context into a JavaScript object and inject into the state
-	obj := jst.vm.PushObject()
-
-	for key, val := range jst.ctx {
-		switch val := val.(type) {
-		case uint64:
-			jst.vm.PushUint(uint(val))
-
-		case string:
-			jst.vm.PushString(val)
-
-		case []byte:
-			ptr := jst.vm.PushFixedBuffer(len(val))
-			copy(makeSlice(ptr, uint(len(val))), val)
-
-		case common.Address:
-			ptr := jst.vm.PushFixedBuffer(20)
-			copy(makeSlice(ptr, 20), val[:])
-
-		case *big.Int:
-			pushBigInt(val, jst.vm)
-
-		default:
-			panic(fmt.Sprintf("unsupported type: %T", val))
-		}
-		jst.vm.PutPropString(obj, key)
-	}
-	jst.vm.PutPropString(jst.stateObject, "ctx")
+	jst.addCtxIntoState()
 
 	// Finalize the trace and return the results
-	result, err := jst.call("result", "ctx", "db")
+	result, err := jst.call(false, "result", "ctx", "db")
 	if err != nil {
 		jst.err = wrapError("result", err)
 	}

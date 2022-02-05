@@ -112,6 +112,9 @@ type AccessListTracer struct {
 	list accessList                  // Set of accounts and storage slots touched
 }
 
+func (a *AccessListTracer) CapturePreEVM(env *EVM, inputs map[string]interface{}) {
+}
+
 // NewAccessListTracer creates a new tracer that can generate AccessLists.
 // An optional AccessList can be specified to occupy slots and addresses in
 // the resulting accesslist.

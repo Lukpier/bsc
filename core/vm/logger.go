@@ -105,6 +105,7 @@ func (s *StructLog) ErrorString() string {
 // Note that reference types are actual VM data structures; make copies
 // if you need to retain them beyond the current call.
 type Tracer interface {
+	CapturePreEVM(env *EVM, inputs map[string]interface{})
 	CaptureStart(env *EVM, from common.Address, to common.Address, create bool, input []byte, gas uint64, value *big.Int)
 	CaptureState(env *EVM, pc uint64, op OpCode, gas, cost uint64, scope *ScopeContext, rData []byte, depth int, err error)
 	CaptureFault(env *EVM, pc uint64, op OpCode, gas, cost uint64, scope *ScopeContext, depth int, err error)
@@ -143,6 +144,10 @@ func (l *StructLogger) Reset() {
 	l.logs = l.logs[:0]
 	l.err = nil
 }
+
+// CapturePreEVM implements the Tracer interface to bootstrap the tracing context,
+// before EVM init. This is useful for reading initial balance, state, etc.
+func (l *StructLogger) CapturePreEVM(env *EVM, inputs map[string]interface{}) {}
 
 // CaptureStart implements the Tracer interface to initialize the tracing operation.
 func (l *StructLogger) CaptureStart(env *EVM, from common.Address, to common.Address, create bool, input []byte, gas uint64, value *big.Int) {
@@ -312,6 +317,9 @@ func (t *mdLogger) CaptureStart(env *EVM, from common.Address, to common.Address
 |  Pc   |      Op     | Cost |   Stack   |   RStack  |  Refund |
 |-------|-------------|------|-----------|-----------|---------|
 `)
+}
+
+func (t *mdLogger) CapturePreEVM(env *EVM, inputs map[string]interface{}) {
 }
 
 // CaptureState also tracks SLOAD/SSTORE ops to track storage change.

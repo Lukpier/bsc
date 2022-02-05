@@ -327,6 +327,7 @@ func TestTraceCallMany(t *testing.T) {
 		tx, _ := types.SignTx(types.NewTransaction(uint64(i), accounts[1].addr, big.NewInt(1000), params.TxGas, big.NewInt(0), nil), signer, accounts[0].key)
 		b.AddTx(tx)
 	}))
+	var tracer = "callTracerParity"
 	var testSuite = []struct {
 		blockNumber rpc.BlockNumber
 		calls       []ethapi.CallArgs
@@ -336,7 +337,7 @@ func TestTraceCallMany(t *testing.T) {
 	}{
 		// Standard JSON trace upon the genesis, plain transfer.
 		{
-			blockNumber: rpc.BlockNumber(0),
+			blockNumber: rpc.BlockNumber(genBlocks),
 			calls: []ethapi.CallArgs{
 				{
 					From:  &accounts[0].addr,
@@ -344,17 +345,19 @@ func TestTraceCallMany(t *testing.T) {
 					Value: (*hexutil.Big)(big.NewInt(1000)),
 				},
 				{
-					From:  &accounts[0].addr,
-					To:    &accounts[1].addr,
-					Value: (*hexutil.Big)(big.NewInt(1000)),
+					From:  &accounts[1].addr,
+					To:    &accounts[0].addr,
+					Value: (*hexutil.Big)(big.NewInt(2000)),
 				},
 				{
 					From:  &accounts[0].addr,
 					To:    &accounts[1].addr,
-					Value: (*hexutil.Big)(big.NewInt(1000)),
+					Value: (*hexutil.Big)(big.NewInt(3000)),
 				},
 			},
-			config:    nil,
+			config: &TraceCallConfig{
+				Tracer: &tracer,
+			},
 			expectErr: nil,
 			expect: []ethapi.ExecutionResult{
 				{
@@ -381,7 +384,6 @@ func TestTraceCallMany(t *testing.T) {
 
 	for _, testspec := range testSuite {
 		result, err := api.TraceCallMany(context.Background(), testspec.calls, rpc.BlockNumberOrHash{BlockNumber: &testspec.blockNumber}, testspec.config)
-		fmt.Printf("%v", result[0])
 		if testspec.expectErr != nil {
 			if err == nil {
 				t.Errorf("Expect error %v, get nothing", testspec.expectErr)
@@ -402,7 +404,7 @@ func TestTraceCallMany(t *testing.T) {
 	}
 }
 
-func TestOverridenTraceCall(t *testing.T) {
+func TestOverriddenTraceCall(t *testing.T) {
 	t.Parallel()
 
 	// Initialize test accounts
@@ -418,7 +420,7 @@ func TestOverridenTraceCall(t *testing.T) {
 		// Transfer from account[0] to account[1]
 		//    value: 1000 wei
 		//    fee:   0 wei
-		tx, _ := types.SignTx(types.NewTransaction(uint64(i), accounts[1].addr, big.NewInt(1000), params.TxGas, big.NewInt(0), nil), signer, accounts[0].key)
+		tx, _ := types.SignTx(types.NewTransaction(uint64(i), accounts[1].addr, big.NewInt(1000), params.TxGas, nil, nil), signer, accounts[0].key)
 		b.AddTx(tx)
 	}))
 	randomAccounts, tracer := newAccounts(3), "callTracer"
@@ -455,19 +457,21 @@ func TestOverridenTraceCall(t *testing.T) {
 			},
 		},
 		// Invalid call without state overriding
-		{
-			blockNumber: rpc.PendingBlockNumber,
-			call: ethapi.CallArgs{
-				From:  &randomAccounts[0].addr,
-				To:    &randomAccounts[1].addr,
-				Value: (*hexutil.Big)(big.NewInt(1000)),
-			},
-			config: &TraceCallConfig{
-				Tracer: &tracer,
-			},
-			expectErr: core.ErrInsufficientFundsForTransfer,
-			expect:    nil,
-		},
+		// NOTE: this test has been disabled, as at core-geth we override
+		// vm.(Can)Transfer in order to have compatible tracers with OE
+		// {
+		// 	blockNumber: rpc.PendingBlockNumber,
+		// 	call: ethapi.CallArgs{
+		// 		From:  &randomAccounts[0].addr,
+		// 		To:    &randomAccounts[1].addr,
+		// 		Value: (*hexutil.Big)(big.NewInt(1000)),
+		// 	},
+		// 	config: &TraceCallConfig{
+		// 		Tracer: &tracer,
+		// 	},
+		// 	expectErr: core.ErrInsufficientFundsForTransfer,
+		// 	expect:    nil,
+		// },
 		// Successful simple contract call
 		//
 		// // SPDX-License-Identifier: GPL-3.0
@@ -513,24 +517,24 @@ func TestOverridenTraceCall(t *testing.T) {
 			},
 		},
 	}
-	for _, testspec := range testSuite {
+	for i, testspec := range testSuite {
 		result, err := api.TraceCall(context.Background(), testspec.call, rpc.BlockNumberOrHash{BlockNumber: &testspec.blockNumber}, testspec.config)
 		if testspec.expectErr != nil {
 			if err == nil {
-				t.Errorf("Expect error %v, get nothing", testspec.expectErr)
+				t.Errorf("test %d: want error %v, have nothing", i, testspec.expectErr)
 				continue
 			}
 			if !errors.Is(err, testspec.expectErr) {
-				t.Errorf("Error mismatch, want %v, get %v", testspec.expectErr, err)
+				t.Errorf("test %d: error mismatch, want %v, have %v", i, testspec.expectErr, err)
 			}
 		} else {
 			if err != nil {
-				t.Errorf("Expect no error, get %v", err)
+				t.Errorf("test %d: want no error, have %v", i, err)
 				continue
 			}
 			ret := new(callTrace)
 			if err := json.Unmarshal(result.(json.RawMessage), ret); err != nil {
-				t.Fatalf("failed to unmarshal trace result: %v", err)
+				t.Fatalf("test %d: failed to unmarshal trace result: %v", i, err)
 			}
 			if !jsonEqual(ret, testspec.expect) {
 				// uncomment this for easier debugging

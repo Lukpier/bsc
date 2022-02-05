@@ -59,7 +59,7 @@ func testCtx() *vmContext {
 	return &vmContext{blockCtx: vm.BlockContext{BlockNumber: big.NewInt(1)}, txCtx: vm.TxContext{GasPrice: big.NewInt(100000)}}
 }
 
-func runTrace(tracer *Tracer, vmctx *vmContext) (json.RawMessage, error) {
+func runTrace(tracer Tracer, vmctx *vmContext) (json.RawMessage, error) {
 	env := vm.NewEVM(vmctx.blockCtx, vmctx.txCtx, &dummyStatedb{}, params.TestChainConfig, vm.Config{Debug: true, Tracer: tracer})
 	var (
 		startGas uint64 = 10000
@@ -81,7 +81,7 @@ func TestTracer(t *testing.T) {
 	execTracer := func(code string) []byte {
 		t.Helper()
 		ctx := &vmContext{blockCtx: vm.BlockContext{BlockNumber: big.NewInt(1)}, txCtx: vm.TxContext{GasPrice: big.NewInt(100000)}}
-		tracer, err := New(code, ctx.txCtx)
+		tracer, err := New(code, &txTraceContext{index: 1, hash: common.Hash{}, block: common.Hash{}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -129,7 +129,7 @@ func TestHalt(t *testing.T) {
 
 	timeout := errors.New("stahp")
 	vmctx := testCtx()
-	tracer, err := New("{step: function() { while(1); }, result: function() { return null; }}", vmctx.txCtx)
+	tracer, err := New("{step: function() { while(1); }, result: function() { return null; }}", new(txTraceContext))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,8 +145,7 @@ func TestHalt(t *testing.T) {
 }
 
 func TestHaltBetweenSteps(t *testing.T) {
-	vmctx := testCtx()
-	tracer, err := New("{step: function() {}, fault: function() {}, result: function() { return null; }}", vmctx.txCtx)
+	tracer, err := New("{step: function() {}, fault: function() {}, result: function() { return null; }}", new(txTraceContext))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +167,7 @@ func TestHaltBetweenSteps(t *testing.T) {
 // TestNoStepExec tests a regular value transfer (no exec), and accessing the statedb
 // in 'result'
 func TestNoStepExec(t *testing.T) {
-	runEmptyTrace := func(tracer *Tracer, vmctx *vmContext) (json.RawMessage, error) {
+	runEmptyTrace := func(tracer Tracer, vmctx *vmContext) (json.RawMessage, error) {
 		env := vm.NewEVM(vmctx.blockCtx, vmctx.txCtx, &dummyStatedb{}, params.TestChainConfig, vm.Config{Debug: true, Tracer: tracer})
 		startGas := uint64(10000)
 		contract := vm.NewContract(account{}, account{}, big.NewInt(0), startGas)
@@ -179,7 +178,7 @@ func TestNoStepExec(t *testing.T) {
 	execTracer := func(code string) []byte {
 		t.Helper()
 		ctx := &vmContext{blockCtx: vm.BlockContext{BlockNumber: big.NewInt(1)}, txCtx: vm.TxContext{GasPrice: big.NewInt(100000)}}
-		tracer, err := New(code, ctx.txCtx)
+		tracer, err := New(code, new(txTraceContext))
 		if err != nil {
 			t.Fatal(err)
 		}
