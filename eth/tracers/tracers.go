@@ -14,16 +14,17 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-// Package tracers is a collection of JavaScript transaction tracers.
+// Package tracers is a manager for transaction tracing engines.
 package tracers
 
 import (
 	"encoding/json"
-	"strings"
-	"unicode"
-
+	"errors"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/vm"
-	"github.com/ethereum/go-ethereum/eth/tracers/internal/tracers"
+	tracers2 "github.com/ethereum/go-ethereum/eth/tracers/js"
+	"github.com/ethereum/go-ethereum/eth/tracers/js/internal/tracers"
+	"strings"
 )
 
 var (
@@ -31,58 +32,56 @@ var (
 	jsTracers                              = make(map[string]string)
 )
 
+// Context contains some contextual infos for a transaction execution that is not
+// available from within the EVM object.
+type Context struct {
+	BlockHash common.Hash // Hash of the block the tx is contained within (zero if dangling tx or call)
+	TxIndex   int         // Index of the transaction within a block (zero if dangling tx or call)
+	TxHash    common.Hash // Hash of the transaction being traced (zero if dangling call)
+}
+
 // Tracer interface extends vm.EVMLogger and additionally
 // allows collecting the tracing result.
 type Tracer interface {
-	vm.Tracer
+	vm.EVMLogger
 	GetResult() (json.RawMessage, error)
 	// Stop terminates execution of the tracer at the first opportune moment.
 	Stop(err error)
 }
 
-// all contains all the built in JavaScript tracers by name.
-var all = make(map[string]string)
+type lookupFunc func(string, *Context) (*Tracer, error)
 
-// camel converts a snake cased input string into a camel cased output.
-func camel(str string) string {
-	pieces := strings.Split(str, "_")
-	for i := 1; i < len(pieces); i++ {
-		pieces[i] = string(unicode.ToUpper(rune(pieces[i][0]))) + pieces[i][1:]
-	}
-	return strings.Join(pieces, "")
-}
-
-// New returns a new instance of a tracer,
-// 1. If 'code' is the name of a registered native tracer, then that tracer
-//   is instantiated and returned
-// 2. If 'code' is the name of a registered js-tracer, then that tracer is
-//   instantiated and returned
-// 3. Otherwise, the code is interpreted as the js code of a js-tracer, and
-//   is evaluated and returned.
-func New(code string, ctx *txTraceContext) (Tracer, error) {
-	// Resolve native tracer
-	if fn, ok := nativeTracers[code]; ok {
-		return fn(), nil
-	}
-	// Resolve js-tracers by name and assemble the tracer object
-	if tracer, ok := jsTracers[code]; ok {
-		code = tracer
-	}
-	return newJsTracer(code, ctx)
-}
+var (
+	lookups []lookupFunc
+)
 
 // init retrieves the JavaScript transaction tracers included in go-ethereum.
 func init() {
 	for _, file := range tracers.AssetNames() {
-		name := camel(strings.TrimSuffix(file, ".js"))
+		name := tracers2.Camel(strings.TrimSuffix(file, ".js"))
 		jsTracers[name] = string(tracers.MustAsset(file))
 	}
 }
 
-// tracer retrieves a specific JavaScript tracer by name.
-func tracer(name string) (string, bool) {
-	if tracer, ok := all[name]; ok {
-		return tracer, true
+// RegisterLookup registers a method as a lookup for tracers, meaning that
+// users can invoke a named tracer through that lookup. If 'wildcard' is true,
+// then the lookup will be placed last. This is typically meant for interpreted
+// engines (js) which can evaluate dynamic user-supplied code.
+func RegisterLookup(wildcard bool, lookup lookupFunc) {
+	if wildcard {
+		lookups = append(lookups, lookup)
+	} else {
+		lookups = append([]lookupFunc{lookup}, lookups...)
 	}
-	return "", false
+}
+
+// New returns a new instance of a tracer, by iterating through the
+// registered lookups.
+func New(code string, ctx *Context) (*Tracer, error) {
+	for _, lookup := range lookups {
+		if tracer, err := lookup(code, ctx); err == nil {
+			return tracer, nil
+		}
+	}
+	return nil, errors.New("tracer not found")
 }
