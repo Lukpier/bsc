@@ -22,14 +22,8 @@ import (
 	"errors"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/vm"
-	tracers2 "github.com/ethereum/go-ethereum/eth/tracers/js"
-	"github.com/ethereum/go-ethereum/eth/tracers/js/internal/tracers"
+	"github.com/ethereum/go-ethereum/eth/tracers/js/tracers"
 	"strings"
-)
-
-var (
-	nativeTracers map[string]func() Tracer = make(map[string]func() Tracer)
-	jsTracers                              = make(map[string]string)
 )
 
 // Context contains some contextual infos for a transaction execution that is not
@@ -40,28 +34,20 @@ type Context struct {
 	TxHash    common.Hash // Hash of the transaction being traced (zero if dangling call)
 }
 
-// Tracer interface extends vm.EVMLogger and additionally
+// Tracer interface extends vm.Tracer and additionally
 // allows collecting the tracing result.
 type Tracer interface {
-	vm.EVMLogger
+	vm.Tracer
 	GetResult() (json.RawMessage, error)
 	// Stop terminates execution of the tracer at the first opportune moment.
 	Stop(err error)
 }
 
-type lookupFunc func(string, *Context) (*Tracer, error)
+type lookupFunc func(string, *Context) (Tracer, error)
 
 var (
 	lookups []lookupFunc
 )
-
-// init retrieves the JavaScript transaction tracers included in go-ethereum.
-func init() {
-	for _, file := range tracers.AssetNames() {
-		name := tracers2.Camel(strings.TrimSuffix(file, ".js"))
-		jsTracers[name] = string(tracers.MustAsset(file))
-	}
-}
 
 // RegisterLookup registers a method as a lookup for tracers, meaning that
 // users can invoke a named tracer through that lookup. If 'wildcard' is true,
@@ -77,11 +63,22 @@ func RegisterLookup(wildcard bool, lookup lookupFunc) {
 
 // New returns a new instance of a tracer, by iterating through the
 // registered lookups.
-func New(code string, ctx *Context) (*Tracer, error) {
+func New(code string, ctx *Context) (Tracer, error) {
 	for _, lookup := range lookups {
 		if tracer, err := lookup(code, ctx); err == nil {
 			return tracer, nil
 		}
 	}
 	return nil, errors.New("tracer not found")
+}
+
+var assetTracers = make(map[string]string)
+
+// init retrieves the JavaScript transaction tracers included in go-ethereum.
+func init() {
+	for _, file := range tracers.AssetNames() {
+		name := Camel(strings.TrimSuffix(file, ".js"))
+		assetTracers[name] = string(tracers.MustAsset(file))
+	}
+	RegisterLookup(true, newJsTracer)
 }

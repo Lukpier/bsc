@@ -804,6 +804,11 @@ func newRPCBalance(balance *big.Int) **hexutil.Big {
 	return &rpcBalance
 }
 
+func newRPCUint64(number uint64) *hexutil.Uint64 {
+	rpcUint64 := hexutil.Uint64(number)
+	return &rpcUint64
+}
+
 func newRPCBytes(bytes []byte) *hexutil.Bytes {
 	rpcBytes := hexutil.Bytes(bytes)
 	return &rpcBytes

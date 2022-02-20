@@ -81,10 +81,10 @@ func Main(ctx *cli.Context) error {
 
 	var (
 		err     error
-		tracer  vm.EVMLogger
+		tracer  vm.Tracer
 		baseDir = ""
 	)
-	var getTracer func(txIndex int, txHash common.Hash) (vm.EVMLogger, error)
+	var getTracer func(txIndex int, txHash common.Hash) (vm.Tracer, error)
 
 	// If user specified a basedir, make sure it exists
 	if ctx.IsSet(OutputBasedir.Name) {
@@ -111,7 +111,7 @@ func Main(ctx *cli.Context) error {
 				prevFile.Close()
 			}
 		}()
-		getTracer = func(txIndex int, txHash common.Hash) (vm.EVMLogger, error) {
+		getTracer = func(txIndex int, txHash common.Hash) (vm.Tracer, error) {
 			if prevFile != nil {
 				prevFile.Close()
 			}
@@ -123,7 +123,7 @@ func Main(ctx *cli.Context) error {
 			return vm.NewJSONLogger(logConfig, traceFile), nil
 		}
 	} else {
-		getTracer = func(txIndex int, txHash common.Hash) (tracer vm.EVMLogger, err error) {
+		getTracer = func(txIndex int, txHash common.Hash) (tracer vm.Tracer, err error) {
 			return nil, nil
 		}
 	}

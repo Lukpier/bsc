@@ -99,12 +99,12 @@ func (s *StructLog) ErrorString() string {
 	return ""
 }
 
-// EVMLogger is used to collect execution traces from an EVM transaction
+// Tracer is used to collect execution traces from an EVM transaction
 // execution. CaptureState is called for each step of the VM with the
 // current VM state.
 // Note that reference types are actual VM data structures; make copies
 // if you need to retain them beyond the current call.
-type EVMLogger interface {
+type Tracer interface {
 	CapturePreEVM(env *EVM, inputs map[string]interface{})
 	CaptureStart(env *EVM, from common.Address, to common.Address, create bool, input []byte, gas uint64, value *big.Int)
 	CaptureState(pc uint64, op OpCode, gas, cost uint64, scope *ScopeContext, rData []byte, depth int, err error)
@@ -114,7 +114,7 @@ type EVMLogger interface {
 	CaptureEnd(output []byte, gasUsed uint64, t time.Duration, err error)
 }
 
-// StructLogger is an EVM state logger and implements EVMLogger.
+// StructLogger is an EVM state logger and implements Tracer.
 //
 // StructLogger can capture state based on the given Log configuration and also keeps
 // a track record of modified storage which is used in reporting snapshots of the
@@ -152,7 +152,7 @@ func (l *StructLogger) Reset() {
 // before EVM init. This is useful for reading initial balance, state, etc.
 func (l *StructLogger) CapturePreEVM(env *EVM, inputs map[string]interface{}) {}
 
-// CaptureStart implements the EVMLogger interface to initialize the tracing operation.
+// CaptureStart implements the Tracer interface to initialize the tracing operation.
 func (l *StructLogger) CaptureStart(env *EVM, from common.Address, to common.Address, create bool, input []byte, gas uint64, value *big.Int) {
 	l.env = env
 }
@@ -218,7 +218,7 @@ func (l *StructLogger) CaptureState(pc uint64, op OpCode, gas, cost uint64, scop
 	l.logs = append(l.logs, log)
 }
 
-// CaptureFault implements the EVMLogger interface to trace an execution fault
+// CaptureFault implements the Tracer interface to trace an execution fault
 // while running an opcode.
 func (l *StructLogger) CaptureFault(pc uint64, op OpCode, gas, cost uint64, scope *ScopeContext, depth int, err error) {
 }

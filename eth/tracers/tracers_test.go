@@ -150,7 +150,7 @@ func callTracerParityTestRunner(filename string, dirPath string) error {
 	_, statedb := tests.MakePreState(rawdb.NewMemoryDatabase(), test.Genesis.Alloc, false)
 
 	// Create the tracer, the EVM environment and run it
-	tracer, err := New("callTracerParity", new(txTraceContext))
+	tracer, err := New("callTracerParity", new(Context))
 	if err != nil {
 		return fmt.Errorf("failed to create call tracer: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestCallTracerParity(t *testing.T) {
 			continue
 		}
 		file := file // capture range variable
-		t.Run(camel(strings.TrimSuffix(file.Name(), ".json")), func(t *testing.T) {
+		t.Run(Camel(strings.TrimSuffix(file.Name(), ".json")), func(t *testing.T) {
 			t.Parallel()
 
 			err := callTracerParityTestRunner(file.Name(), folderName)
@@ -263,7 +263,7 @@ func TestPrestateTracerCreate2(t *testing.T) {
 	_, statedb := tests.MakePreState(rawdb.NewMemoryDatabase(), alloc, false)
 
 	// Create the tracer, the EVM environment and run it
-	tracer, err := New("prestateTracer", new(txTraceContext))
+	tracer, err := New("prestateTracer", new(Context))
 	if err != nil {
 		t.Fatalf("failed to create call tracer: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestCallTracer(t *testing.T) {
 			continue
 		}
 		file := file // capture range variable
-		t.Run(camel(strings.TrimSuffix(strings.TrimPrefix(file.Name(), "call_tracer_"), ".json")), func(t *testing.T) {
+		t.Run(Camel(strings.TrimSuffix(strings.TrimPrefix(file.Name(), "call_tracer_"), ".json")), func(t *testing.T) {
 			t.Parallel()
 
 			// Call tracer test found, read if from disk
@@ -338,7 +338,7 @@ func TestCallTracer(t *testing.T) {
 			_, statedb := tests.MakePreState(rawdb.NewMemoryDatabase(), test.Genesis.Alloc, false)
 
 			// Create the tracer, the EVM environment and run it
-			tracer, err := New("callTracer", new(txTraceContext))
+			tracer, err := New("callTracer", new(Context))
 			if err != nil {
 				t.Fatalf("failed to create call tracer: %v", err)
 			}

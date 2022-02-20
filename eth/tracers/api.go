@@ -1050,7 +1050,7 @@ func (api *API) traceTx(ctx context.Context, message core.Message, txctx *Contex
 	// Assemble the structured logger or the JavaScript tracer
 
 	var (
-		tracer    Tracer
+		tracer    vm.Tracer
 		err       error
 		txContext = core.NewEVMTxContext(message)
 	)

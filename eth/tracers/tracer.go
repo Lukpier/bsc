@@ -15,7 +15,7 @@
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
 // package js is a collection of tracers written in javascript.
-package js
+package tracers
 
 import (
 	"encoding/json"
@@ -26,8 +26,7 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
-	tracers2 "github.com/ethereum/go-ethereum/eth/tracers"
-	"github.com/ethereum/go-ethereum/eth/tracers/js/internal/tracers"
+	"github.com/ethereum/go-ethereum/eth/tracers/js"
 	"github.com/ethereum/go-ethereum/log"
 	"gopkg.in/olebedev/go-duktape.v3"
 	"math/big"
@@ -45,17 +44,6 @@ func Camel(str string) string {
 		pieces[i] = string(unicode.ToUpper(rune(pieces[i][0]))) + pieces[i][1:]
 	}
 	return strings.Join(pieces, "")
-}
-
-var assetTracers = make(map[string]string)
-
-// init retrieves the JavaScript transaction tracers included in go-ethereum.
-func init() {
-	for _, file := range tracers.AssetNames() {
-		name := Camel(strings.TrimSuffix(file, ".js"))
-		assetTracers[name] = string(tracers.MustAsset(file))
-	}
-	tracers2.RegisterLookup(true, newJsTracer)
 }
 
 // makeSlice convert an unsafe memory pointer with the given type into a Go byte
@@ -410,7 +398,7 @@ func (f *frame) pushObject(vm *duktape.Context) {
 // newJsTracer instantiates a new tracer instance. code specifies a Javascript snippet,
 // which must evaluate to an expression returning an object with 'step', 'fault'
 // and 'result' functions.
-func newJsTracer(code string, ctx *tracers2.Context) (*tracers2.Tracer, error) {
+func newJsTracer(code string, ctx *Context) (Tracer, error) {
 	tracer := &jsTracer{
 		vm:                        duktape.New(),
 		ctx:                       make(map[string]interface{}),
@@ -565,7 +553,7 @@ func newJsTracer(code string, ctx *tracers2.Context) (*tracers2.Tracer, error) {
 	tracer.traceSteps = hasStep
 
 	// Tracer is valid, inject the big int library to access large numbers
-	tracer.vm.EvalString(bigIntegerJS)
+	tracer.vm.EvalString(js.BigIntegerJS)
 	tracer.vm.PutGlobalString("bigInt")
 
 	// Push the global environment state as object #1 into the JSVM stack
@@ -796,7 +784,7 @@ func (jst *jsTracer) CaptureStart(env *vm.EVM, from common.Address, to common.Ad
 }
 
 // CaptureState implements the Tracer interface to trace a single step of VM execution.
-func (jst *jsTracer) CaptureState(env *vm.EVM, pc uint64, op vm.OpCode, gas, cost uint64, scope *vm.ScopeContext, rData []byte, depth int, err error) {
+func (jst *jsTracer) CaptureState(pc uint64, op vm.OpCode, gas, cost uint64, scope *vm.ScopeContext, rData []byte, depth int, err error) {
 	if jst.err != nil {
 		return
 	}
@@ -814,7 +802,7 @@ func (jst *jsTracer) CaptureState(env *vm.EVM, pc uint64, op vm.OpCode, gas, cos
 	*jst.gasValue = uint(gas)
 	*jst.costValue = uint(cost)
 	*jst.depthValue = uint(depth)
-	*jst.refundValue = uint(env.StateDB.GetRefund())
+	//*jst.refundValue = uint(env.StateDB.GetRefund())
 
 	jst.errorValue = nil
 	if err != nil {
@@ -828,7 +816,7 @@ func (jst *jsTracer) CaptureState(env *vm.EVM, pc uint64, op vm.OpCode, gas, cos
 }
 
 // CaptureFault implements the Tracer interface to trace an execution fault
-func (jst *jsTracer) CaptureFault(env *vm.EVM, pc uint64, op vm.OpCode, gas, cost uint64, scope *vm.ScopeContext, depth int, err error) {
+func (jst *jsTracer) CaptureFault(pc uint64, op vm.OpCode, gas, cost uint64, scope *vm.ScopeContext, depth int, err error) {
 	if jst.err != nil {
 		return
 	}
@@ -840,6 +828,10 @@ func (jst *jsTracer) CaptureFault(env *vm.EVM, pc uint64, op vm.OpCode, gas, cos
 		jst.err = wrapError("fault", err)
 	}
 }
+
+func (jst *jsTracer) CaptureEnter(typ vm.OpCode, from common.Address, to common.Address, input []byte, gas uint64, value *big.Int) {
+}
+func (jst *jsTracer) CaptureExit(output []byte, gasUsed uint64, err error) {}
 
 // CaptureEnd is called after the call finishes to finalize the tracing.
 func (jst *jsTracer) CaptureEnd(output []byte, gasUsed uint64, t time.Duration, err error) {
